@@ -108,6 +108,68 @@ fn write_ifc_with_quality_mode_and_limits(
     Ok(ifc::write_step(&result.model))
 }
 
+/// What the `saved_meshes` argument asks of the exporter: `"none"`, `"auto"`
+/// (doors and windows on Revit 2023 to 2027, as the CLIs default) or `"all"`.
+fn parse_saved_mesh_scope(
+    rf: &mut RustRevitFile,
+    saved_meshes: &str,
+) -> PyResult<Option<ifc::saved_meshes::SavedMeshScope>> {
+    use ifc::saved_meshes::SavedMeshScope;
+    match saved_meshes {
+        "none" => Ok(None),
+        "all" => Ok(Some(SavedMeshScope::All)),
+        "auto" => {
+            let release = rf.basic_file_info().ok().map(|info| info.version);
+            Ok(release
+                .filter(|version| (2023..=2027).contains(version))
+                .map(|_| SavedMeshScope::DoorsAndWindows))
+        }
+        other => Err(PyValueError::new_err(format!(
+            "unknown saved_meshes {other:?}; expected \"none\", \"auto\" or \"all\""
+        ))),
+    }
+}
+
+/// Run the document exporter and return the model every writer shares: STEP,
+/// glTF, plan SVG and the JSON geometry dump all read this one `IfcModel`.
+fn build_export_model(
+    rf: &mut RustRevitFile,
+    mode: ifc::ExportQualityMode,
+    walker_limits: walker::WalkerLimits,
+    allow_partial: bool,
+    saved_meshes: &str,
+    revit_property_sets: bool,
+) -> PyResult<ifc::IfcModel> {
+    let result = ifc::RvtDocExporter
+        .export_with_diagnostics_mode_and_limits(rf, mode, walker_limits)
+        .map_err(to_py_val)?;
+    // #1075: a stream a resource limit kept from being read leaves the
+    // export without what it holds; refuse unless the caller accepts that.
+    if !allow_partial && !rf.unread_streams().is_empty() {
+        let mut message =
+            String::from("part of the file was not read, so the export would be incomplete:");
+        for stream in rf.unread_streams() {
+            message.push_str(&format!("\n  {stream}"));
+        }
+        message.push_str(
+            "\nOpen the file with a larger max_stream_bytes / max_inflate_bytes to read it, or pass allow_partial=True to export what was read.",
+        );
+        return Err(PyValueError::new_err(message));
+    }
+    let mut model = result.model;
+    // The saved graphics and the parameters only improve the export: when
+    // they cannot be read, it goes ahead with what it has.
+    if let Some(scope) = parse_saved_mesh_scope(rf, saved_meshes)? {
+        let control = rvt::control::WalkerControl::default();
+        let _ = ifc::saved_meshes::attach_scoped_with_control(rf, &mut model, scope, &control);
+    }
+    if revit_property_sets {
+        let _ = ifc::revit_property_sets::attach(rf, &mut model);
+    }
+    mode.validate(&result.diagnostics).map_err(to_py_val)?;
+    Ok(model)
+}
+
 fn unread_streams_to_list<'py>(
     py: Python<'py>,
     unread: &[rvt::reader::UnreadStream],
@@ -731,6 +793,122 @@ impl PyRevitFile {
             self.walker_limits,
             allow_partial,
         )
+    }
+
+    /// The exported IFC model as JSON: project metadata, storeys, materials,
+    /// representation maps and one entry per element (IFC type, name, storey,
+    /// material, placement in feet, rotation, extrusion profile and the richer
+    /// solid shape when the element has one).
+    ///
+    /// This is the same `IfcModel` the STEP, glTF and SVG writers consume, so
+    /// a caller can inspect or re-serialise the geometry without parsing IFC.
+    ///
+    /// `saved_meshes` is `"none"`, `"auto"` (doors and windows on Revit 2023
+    /// to 2027) or `"all"`; `revit_property_sets=True` adds Revit's own
+    /// property sets. Both only add to the export and are skipped when the
+    /// file does not carry them.
+    #[pyo3(signature = (mode = "scaffold", allow_partial = false, saved_meshes = "auto", revit_property_sets = false))]
+    fn export_model_json(
+        &mut self,
+        mode: &str,
+        allow_partial: bool,
+        saved_meshes: &str,
+        revit_property_sets: bool,
+    ) -> PyResult<String> {
+        let mode = parse_export_quality_mode(mode)?;
+        let model = build_export_model(
+            &mut self.inner,
+            mode,
+            self.walker_limits,
+            allow_partial,
+            saved_meshes,
+            revit_property_sets,
+        )?;
+        serde_json::to_string(&model).map_err(to_py_val)
+    }
+
+    /// The exported model as IFC4 STEP text, with the same saved-mesh and
+    /// Revit-property-set options `rvt-ifc` exposes on the command line.
+    #[pyo3(signature = (mode = "scaffold", allow_partial = false, saved_meshes = "auto", revit_property_sets = false))]
+    fn write_ifc_full(
+        &mut self,
+        mode: &str,
+        allow_partial: bool,
+        saved_meshes: &str,
+        revit_property_sets: bool,
+    ) -> PyResult<String> {
+        let mode = parse_export_quality_mode(mode)?;
+        let model = build_export_model(
+            &mut self.inner,
+            mode,
+            self.walker_limits,
+            allow_partial,
+            saved_meshes,
+            revit_property_sets,
+        )?;
+        Ok(ifc::write_step(&model))
+    }
+
+    /// The exported model as a glTF 2.0 binary (`.glb`) — exactly what
+    /// `rvt-gltf` writes: metres, Y-up, each element drawn as its IFC body.
+    #[pyo3(signature = (mode = "scaffold", allow_partial = false, saved_meshes = "auto", revit_property_sets = false))]
+    fn write_glb<'py>(
+        &mut self,
+        py: Python<'py>,
+        mode: &str,
+        allow_partial: bool,
+        saved_meshes: &str,
+        revit_property_sets: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let mode = parse_export_quality_mode(mode)?;
+        let model = build_export_model(
+            &mut self.inner,
+            mode,
+            self.walker_limits,
+            allow_partial,
+            saved_meshes,
+            revit_property_sets,
+        )?;
+        Ok(PyBytes::new(py, &ifc::gltf::model_to_glb(&model)))
+    }
+
+    /// The exported model as a plan-view SVG, as `rvt-sheet` draws it:
+    /// per-category colours, one footprint per element, optional labels.
+    #[pyo3(signature = (width_px = 1200, height_px = 800, margin_px = 40.0, show_labels = true, background = Some("#FFFFFF".to_string())))]
+    fn render_plan_svg(
+        &mut self,
+        width_px: u32,
+        height_px: u32,
+        margin_px: f32,
+        show_labels: bool,
+        background: Option<String>,
+    ) -> PyResult<String> {
+        let model = build_export_model(
+            &mut self.inner,
+            ifc::ExportQualityMode::Scaffold,
+            self.walker_limits,
+            false,
+            "auto",
+            false,
+        )?;
+        let options = ifc::sheet::SheetOptions {
+            width_px,
+            height_px,
+            margin_px,
+            show_labels,
+            background,
+        };
+        Ok(ifc::sheet::render_plan_svg(&model, &options))
+    }
+
+    /// The PNG thumbnail Revit embedded in the file, or `b""` when the file
+    /// carries no preview.
+    fn preview_png<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        match self.inner.preview_png() {
+            Ok(data) => Ok(PyBytes::new(py, &data)),
+            Err(rvt::Error::StreamNotFound(_)) => Ok(PyBytes::new(py, b"")),
+            Err(error) => Err(to_py_metadata_err(error)),
+        }
     }
 
     /// Spreadsheet schedule of the decoded model as CSV text

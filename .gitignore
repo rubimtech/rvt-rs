@@ -106,6 +106,12 @@ env/
 *.egg-info/
 .pytest_cache/
 
+# ---- rvt-mcp (Python MCP server) ----
+# The server's own virtualenv and wheel output are local build state.
+.venv-mcp/
+dist-mcp/
+.ruff_cache/
+
 # ---- Node (in case we add JS tooling) ----
 node_modules/
 npm-debug.log*
