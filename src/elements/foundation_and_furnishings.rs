@@ -131,7 +131,7 @@ impl Furnishing {
     }
 
     pub fn is_wall_hosted(&self) -> bool {
-        !self.host_id.is_none_or(|id| id.get() == 0)
+        self.host_id.is_some_and(|id| id.get() != 0)
     }
 }
 

@@ -6125,7 +6125,11 @@ fn attach_spiral_run_bodies(
             continue;
         };
         let kind = &run.run_type;
-        if !(kind.treads && !kind.risers && !kind.monolithic && kind.tread_thickness_feet > 0.0) {
+        // Only a tread-only, non-monolithic run with a thickness to draw is
+        // modelled here; the other run types are left to their own readers.
+        let tread_only = kind.treads && !kind.risers && !kind.monolithic;
+        let thickness_ok = kind.tread_thickness_feet > 0.0;
+        if !tread_only || !thickness_ok {
             continue;
         }
         // The way round the run climbs: towards smaller angles when the
@@ -9784,12 +9788,13 @@ fn sketch_plan_profiles(
             .iter()
             .filter(|(id, bbox)| {
                 let point = [bbox[0], bbox[1], bbox[2]];
-                !(is_point(bbox)
+                let exact = is_point(bbox)
                     && !lines.contains_key(id)
                     && !arcs.contains_key(id)
                     && ends
                         .iter()
-                        .any(|end| (0..3).all(|axis| (end[axis] - point[axis]).abs() <= eps)))
+                        .any(|end| (0..3).all(|axis| (end[axis] - point[axis]).abs() <= eps));
+                !exact
             })
             .map(|(id, bbox)| {
                 let inside = |p: [f64; 3]| {

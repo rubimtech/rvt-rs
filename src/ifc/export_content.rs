@@ -4073,8 +4073,12 @@ fn wall_arc_outline(arc: &crate::partition_schema_mvp::WallArc) -> Option<Vec<(f
     let half = arc.thickness_feet * 0.5;
     let sweep = arc.angles[1] - arc.angles[0];
     let outer = arc.radius + half;
-    if !(sweep.is_finite() && sweep > 0.0 && sweep <= std::f64::consts::TAU)
-        || !(half.is_finite() && half > 0.0 && arc.radius > half)
+    if !(sweep.is_finite()
+        && sweep > 0.0
+        && sweep <= std::f64::consts::TAU
+        && half.is_finite()
+        && half > 0.0
+        && arc.radius > half)
     {
         return None;
     }

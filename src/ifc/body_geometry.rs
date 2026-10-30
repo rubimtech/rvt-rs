@@ -1118,7 +1118,7 @@ fn revolved_mesh(
     axis: [f64; 3],
     angle: f64,
 ) -> Option<Mesh> {
-    if !(angle.is_finite() && angle != 0.0) || !origin.iter().all(|v| v.is_finite()) {
+    if !(angle.is_finite() && angle != 0.0 && origin.iter().all(|v| v.is_finite())) {
         return None;
     }
     let axis = unit(axis)?;

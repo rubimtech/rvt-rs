@@ -95,29 +95,29 @@ impl ArcWallRectOpeningIndex {
         })
     }
 
+    /// Offsets of every plausible index record in `buf`.
+    ///
+    /// A candidate opens with the class tag followed by two zero pad bytes.
+    /// [`Self::decode`] then re-checks that pair along with the family marker at
+    /// `+0x10` and the buffer bounds, so the scan only has to reject what cannot
+    /// be a record and `decode` has the last word.
+    ///
+    /// Records sit [`OPENING_INDEX_STRIDE`] bytes apart inside a dense table,
+    /// but the spacing is deliberately not a gate: a record that stands alone is
+    /// still a record, and a candidate that fails `decode` is not one however
+    /// its neighbour looks.
     pub fn find_all_for_revit_version(revit_version: u32, buf: &[u8]) -> Vec<usize> {
         if !Self::supports_revit_version(revit_version) {
             return Vec::new();
         }
-        let mut filtered = Vec::new();
-        for i in 0..buf.len().saturating_sub(3) {
-            let tag = u16::from_le_bytes([buf[i], buf[i + 1]]);
-            if tag == ARC_WALL_RECT_OPENING_TAG_2024 && buf[i + 2] == 0 && buf[i + 3] == 0 {
-                filtered.push(i);
-            }
-        }
         let mut out = Vec::new();
-        for (idx, &off) in filtered.iter().enumerate() {
-            let next_delta = filtered.get(idx + 1).map(|n| n - off);
-            let is_stride60 = next_delta == Some(OPENING_INDEX_STRIDE);
-            let marker_ok = off + 0x14 <= buf.len()
-                && u32::from_le_bytes([
-                    buf[off + 0x10],
-                    buf[off + 0x11],
-                    buf[off + 0x12],
-                    buf[off + 0x13],
-                ]) == OPENING_INDEX_FAMILY_MARKER;
-            if (is_stride60 || marker_ok) && marker_ok && Self::decode(buf, off).is_ok() {
+        for off in 0..buf.len().saturating_sub(3) {
+            let tag = u16::from_le_bytes([buf[off], buf[off + 1]]);
+            if tag == ARC_WALL_RECT_OPENING_TAG_2024
+                && buf[off + 2] == 0
+                && buf[off + 3] == 0
+                && Self::decode(buf, off).is_ok()
+            {
                 out.push(off);
             }
         }

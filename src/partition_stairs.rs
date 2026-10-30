@@ -819,12 +819,18 @@ pub fn run_side_profile(
         run_type.nosing_length_feet,
     );
     let construction = (run_type.slanted_risers, run_type.tread_under_riser);
-    if run_type.monolithic
-        || !run_type.treads
+    // Only a run with separate treads and risers, of one of the two measured
+    // constructions, with the dimensions a real run has. Monolithic runs
+    // returned above. The dimension tests stay as they were: a NaN height or
+    // tread is rejected, and a NaN thickness or nosing has always been taken
+    // as acceptable.
+    let height_ok = h.is_finite() && h > 0.0;
+    let tread_ok = t > 0.0 && t < h;
+    if !run_type.treads
         || !run_type.risers
         || !matches!(construction, (true, true) | (false, false))
-        || !(h.is_finite() && h > 0.0)
-        || !(t > 0.0 && t < h)
+        || !height_ok
+        || !tread_ok
         || rt <= 0.0
         || n < 0.0
     {
